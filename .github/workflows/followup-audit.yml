@@ -1,13 +1,24 @@
-name: Follow-up audit
+name: Follow-up acceptance
 on:
   push:
     branches: [ci/followup-audit-20260922]
+    paths: ['.github/workflows/followup-audit.yml', 'audit/auto-unbreak.patch']
 permissions:
   contents: read
 jobs:
-  capture:
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
+  verify:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            node: '18'
+          - os: ubuntu-latest
+            node: '22'
+          - os: windows-latest
+            node: '22'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
         with:
@@ -15,38 +26,110 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
-          node-version: '22'
-      - name: Fetch exact reviewed commits and capture source
+          node-version: ${{ matrix.node }}
+      - name: Before-after and combined acceptance
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p artifacts
+          git config --global core.autocrlf false
           base=9d99cff5fdac1ce4512229bdbcb2150f5a585bfb
           p14=43afd8cedd0b3a40943a575d03c110deb1a01a30
           p15=cc833b3c44d0a6b83b084ac3c829e9d82b2da365
           p16=726d11e17a3cc30f22d6557b6c6671caa32178f0
+          node -e "const f=require('fs'),c=require('crypto');if(c.createHash('sha256').update(f.readFileSync('audit/auto-unbreak.patch')).digest('hex')!=='94e616b6f42fd1ef486e1a02e9aa3fbfff5f2670261d144d792b9483d0180323')throw Error('patch mismatch')"
+          patch="$GITHUB_WORKSPACE/audit/auto-unbreak.patch"
+          out="$GITHUB_WORKSPACE/artifacts"
+          mkdir -p "$out"
+          node --version | tee "$out/node-version.txt"
           git fetch origin "$base" "$p14" "$p15" "$p16"
-          git archive "$base" > artifacts/upstream.tar
-          for pair in "14:$p14" "15:$p15" "16:$p16"; do
-            number=${pair%%:*}; sha=${pair#*:}
-            test "$(git rev-parse "$sha^")" = "$base"
-            git diff "$base" "$sha" > "artifacts/pr-$number.patch"
-          done
-          npm install --prefix "$RUNNER_TEMP/audit-deps" --ignore-scripts --package-lock=false --legacy-peer-deps @deepseek-ai/schemastery@3.18.1
-          tar -cf artifacts/schema-deps.tar -C "$RUNNER_TEMP/audit-deps" node_modules
-          mkdir combined
-          tar -xf artifacts/upstream.tar -C combined
-          cd combined
-          git init -q .
-          for number in 14 15 16; do git apply "../artifacts/pr-$number.patch"; done
-          ln -s "$RUNNER_TEMP/audit-deps/node_modules" node_modules
-          node --test test/*.test.mjs | tee ../artifacts/combined.tap
+          npm install --prefix "$GITHUB_WORKSPACE/deps" --ignore-scripts --package-lock=false --legacy-peer-deps @deepseek-ai/schemastery@3.18.1
+          git worktree add --detach verified "$base"
+          cp -R deps/node_modules verified/node_modules
+          cd verified
+          git apply --include='test/*' "$patch"
+          set +e
+          node --test test/auto-unbreak-safety.test.mjs > "$out/before.tap" 2>&1
+          rc=$?
+          set -e
+          cat "$out/before.tap"
+          test "$rc" = 1
+          grep -Fx '# tests 20' "$out/before.tap"
+          grep -Fx '# pass 6' "$out/before.tap"
+          grep -Fx '# fail 14' "$out/before.tap"
+          git apply --exclude='test/*' "$patch"
+          node --test test/auto-unbreak-safety.test.mjs | tee "$out/after.tap"
+          grep -Fx '# tests 20' "$out/after.tap"
+          grep -Fx '# pass 20' "$out/after.tap"
+          grep -Fx '# fail 0' "$out/after.tap"
+          git add lib/heal.js lib/lifecycle.js test/auto-unbreak-safety.test.mjs
+          git diff --cached --check
+          git diff --cached --name-only | tee "$out/changed-files.txt"
+          printf '%s\n' lib/heal.js lib/lifecycle.js test/auto-unbreak-safety.test.mjs > "$out/expected-files.txt"
+          diff -u "$out/expected-files.txt" "$out/changed-files.txt"
+          git diff --cached > "$out/verified.patch"
+          npm pack --dry-run --ignore-scripts --json > "$out/pack.json"
           find lib test -type f \( -name '*.js' -o -name '*.mjs' \) -exec node --check {} \;
           cd ..
-          tar --exclude=.git --exclude=node_modules -cf artifacts/combined.tar -C combined .
+          git worktree add --detach combined "$base"
+          cp -R deps/node_modules combined/node_modules
+          for sha in "$p14" "$p15" "$p16"; do
+            test "$(git rev-parse "$sha^")" = "$base"
+            git diff "$base" "$sha" | git -C combined apply
+          done
+          cd combined
+          git apply "$patch"
+          node --test test/*.test.mjs | tee "$out/combined.tap"
+          grep -Fx '# tests 83' "$out/combined.tap"
+          grep -Fx '# pass 83' "$out/combined.tap"
+          grep -Fx '# fail 0' "$out/combined.tap"
+          git diff --check
+          find lib test -type f \( -name '*.js' -o -name '*.mjs' \) -exec node --check {} \;
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: followup-pinned-sources
+          name: auto-recovery-${{ matrix.os }}-node${{ matrix.node }}
           path: artifacts/
-          retention-days: 3
+          retention-days: 7
+  publish:
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Publish only the three verified files to a new fix branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = Minervaowl7/dsh-key-rotation
+          test "$GITHUB_REF" = refs/heads/ci/followup-audit-20260922
+          base=9d99cff5fdac1ce4512229bdbcb2150f5a585bfb
+          branch=fix/exact-key-auto-recovery
+          node -e "const f=require('fs'),c=require('crypto');if(c.createHash('sha256').update(f.readFileSync('audit/auto-unbreak.patch')).digest('hex')!=='94e616b6f42fd1ef486e1a02e9aa3fbfff5f2670261d144d792b9483d0180323')throw Error('patch mismatch')"
+          cp audit/auto-unbreak.patch "$RUNNER_TEMP/verified-auto-unbreak.patch"
+          git fetch origin "$base"
+          git switch --detach "$base"
+          test -z "$(git ls-remote --heads origin "refs/heads/$branch")"
+          git apply "$RUNNER_TEMP/verified-auto-unbreak.patch"
+          git add lib/heal.js lib/lifecycle.js test/auto-unbreak-safety.test.mjs
+          git diff --cached --check
+          test "$(git diff --cached --name-only | wc -l)" = 3
+          printf '%s\n' lib/heal.js lib/lifecycle.js test/auto-unbreak-safety.test.mjs > "$RUNNER_TEMP/expected"
+          git diff --cached --name-only > "$RUNNER_TEMP/actual"
+          diff -u "$RUNNER_TEMP/expected" "$RUNNER_TEMP/actual"
+          git config user.name Minervaowl7
+          git config user.email 127482476+Minervaowl7@users.noreply.github.com
+          git commit -m 'fix: probe exact quarantined credentials and ignore stale auto-recovery results'
+          test "$(git rev-parse HEAD^)" = "$base"
+          git push origin "HEAD:refs/heads/$branch"
+          mkdir -p published
+          git rev-parse HEAD > published/commit.txt
+          git show --stat --oneline HEAD > published/scope.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: published-auto-recovery
+          path: published/
+          retention-days: 7
