@@ -1,0 +1,31 @@
+name: Circuit regression audit
+on:
+  push:
+    branches: [ci/circuit-audit-20260922]
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: GooDAnDReaDY/dsh-key-rotation
+          ref: 9d99cff5fdac1ce4512229bdbcb2150f5a585bfb
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Inspect public snapshot and obtain dependencies without running package scripts
+        run: |
+          git rev-parse HEAD
+          find . -name AGENTS.md -not -path './node_modules/*' -print
+          cat package.json
+          npm install --ignore-scripts --no-audit --no-fund
+          mkdir -p /tmp/audit-export
+          tar --exclude=.git -czf /tmp/audit-export/upstream-with-deps.tgz .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: upstream-audit-snapshot
+          path: /tmp/audit-export
+          retention-days: 3
