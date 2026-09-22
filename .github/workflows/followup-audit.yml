@@ -32,15 +32,18 @@ jobs:
             test "$(git rev-parse "$sha^")" = "$base"
             git diff "$base" "$sha" > "artifacts/pr-$number.patch"
           done
+          npm install --prefix "$RUNNER_TEMP/audit-deps" --ignore-scripts --package-lock=false --legacy-peer-deps @deepseek-ai/schemastery@3.18.1
+          tar -cf artifacts/schema-deps.tar -C "$RUNNER_TEMP/audit-deps" node_modules
           mkdir combined
           tar -xf artifacts/upstream.tar -C combined
           cd combined
           git init -q .
           for number in 14 15 16; do git apply "../artifacts/pr-$number.patch"; done
+          ln -s "$RUNNER_TEMP/audit-deps/node_modules" node_modules
           node --test test/*.test.mjs | tee ../artifacts/combined.tap
           find lib test -type f \( -name '*.js' -o -name '*.mjs' \) -exec node --check {} \;
           cd ..
-          tar --exclude=.git -cf artifacts/combined.tar -C combined .
+          tar --exclude=.git --exclude=node_modules -cf artifacts/combined.tar -C combined .
       - uses: actions/upload-artifact@v4
         if: always()
         with:
