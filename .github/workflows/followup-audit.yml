@@ -1,0 +1,48 @@
+name: Follow-up audit
+on:
+  push:
+    branches: [ci/followup-audit-20260922]
+permissions:
+  contents: read
+jobs:
+  capture:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Fetch exact reviewed commits and capture source
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          base=9d99cff5fdac1ce4512229bdbcb2150f5a585bfb
+          p14=43afd8cedd0b3a40943a575d03c110deb1a01a30
+          p15=cc833b3c44d0a6b83b084ac3c829e9d82b2da365
+          p16=726d11e17a3cc30f22d6557b6c6671caa32178f0
+          git fetch origin "$base" "$p14" "$p15" "$p16"
+          git archive "$base" > artifacts/upstream.tar
+          for pair in "14:$p14" "15:$p15" "16:$p16"; do
+            number=${pair%%:*}; sha=${pair#*:}
+            test "$(git rev-parse "$sha^")" = "$base"
+            git diff "$base" "$sha" > "artifacts/pr-$number.patch"
+          done
+          mkdir combined
+          tar -xf artifacts/upstream.tar -C combined
+          cd combined
+          for number in 14 15 16; do git apply --unsafe-paths "../artifacts/pr-$number.patch"; done
+          node --test test/*.test.mjs | tee ../artifacts/combined.tap
+          find lib test -type f \( -name '*.js' -o -name '*.mjs' \) -exec node --check {} \;
+          cd ..
+          tar -cf artifacts/combined.tar -C combined .
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: followup-pinned-sources
+          path: artifacts/
+          retention-days: 3
