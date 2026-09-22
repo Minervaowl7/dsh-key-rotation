@@ -27,6 +27,13 @@ jobs:
           npm install --ignore-scripts --no-audit --no-fund
           git config user.name 'Minervaowl7'
           git config user.email '127482476+Minervaowl7@users.noreply.github.com'
+          build="$RUNNER_TEMP/build-circuit"
+          git worktree add --detach "$build" "$BASE"
+          python "$ROOT/audit/build-circuit.py" "$build"
+          git -C "$build" add -N test
+          git -C "$build" diff --binary > "$ROOT/audit/patches/02-circuit.patch"
+          cp "$ROOT/audit/patches/02-circuit.patch" "$ROOT/audit-results/02-circuit.patch"
+          sha256sum "$ROOT/audit/patches/02-circuit.patch"
           for patch in "$ROOT"/audit/patches/*.patch; do
             id=$(basename "$patch" .patch)
             case "$id" in
