@@ -32,6 +32,7 @@ jobs:
         run: |
           set -euo pipefail
           git config --global core.autocrlf false
+          git show HEAD:audit/auto-unbreak.patch > audit/auto-unbreak.patch
           base=9d99cff5fdac1ce4512229bdbcb2150f5a585bfb
           p14=43afd8cedd0b3a40943a575d03c110deb1a01a30
           p15=cc833b3c44d0a6b83b084ac3c829e9d82b2da365
