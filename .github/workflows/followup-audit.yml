@@ -35,11 +35,12 @@ jobs:
           mkdir combined
           tar -xf artifacts/upstream.tar -C combined
           cd combined
-          for number in 14 15 16; do git apply --unsafe-paths "../artifacts/pr-$number.patch"; done
+          git init -q .
+          for number in 14 15 16; do git apply "../artifacts/pr-$number.patch"; done
           node --test test/*.test.mjs | tee ../artifacts/combined.tap
           find lib test -type f \( -name '*.js' -o -name '*.mjs' \) -exec node --check {} \;
           cd ..
-          tar -cf artifacts/combined.tar -C combined .
+          tar --exclude=.git -cf artifacts/combined.tar -C combined .
       - uses: actions/upload-artifact@v4
         if: always()
         with:
