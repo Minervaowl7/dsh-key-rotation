@@ -3,29 +3,86 @@ on:
   push:
     branches: [ci/circuit-audit-20260922]
 permissions:
-  contents: read
+  contents: write
+concurrency:
+  group: circuit-audit-20260922
+  cancel-in-progress: false
 jobs:
   audit:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
-          repository: GooDAnDReaDY/dsh-key-rotation
-          ref: 9d99cff5fdac1ce4512229bdbcb2150f5a585bfb
-          persist-credentials: false
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: Inspect public snapshot and obtain dependencies without running package scripts
+      - name: Verify before and after, then publish only tested runtime and tests
+        shell: bash
         run: |
-          git rev-parse HEAD
-          find . -name AGENTS.md -not -path './node_modules/*' -print
-          cat package.json
+          set -euo pipefail
+          ROOT="$PWD"
+          BASE=9d99cff5fdac1ce4512229bdbcb2150f5a585bfb
+          mkdir -p "$ROOT/audit-results"
           npm install --ignore-scripts --no-audit --no-fund
-          mkdir -p /tmp/audit-export
-          tar --exclude=.git -czf /tmp/audit-export/upstream-with-deps.tgz .
+          git config user.name 'Minervaowl7'
+          git config user.email '127482476+Minervaowl7@users.noreply.github.com'
+          for patch in "$ROOT"/audit/patches/*.patch; do
+            id=$(basename "$patch" .patch)
+            case "$id" in
+              01-persistence) branch=fix/restored-pool-runtime-state; message='fix: hydrate restored pools before recording provider failures' ;;
+              02-circuit) branch=fix/circuit-probe-lifecycle; message='fix: account for circuit probes and stream outcomes accurately' ;;
+              03-penalties) branch=fix/bounded-quota-penalties; message='fix: keep rate limits short and saturate exponential penalties' ;;
+              *) echo "Unexpected patch id $id"; exit 1 ;;
+            esac
+            work="$RUNNER_TEMP/$id"
+            git worktree add --detach "$work" "$BASE"
+            cd "$work"
+            ln -s "$ROOT/node_modules" node_modules
+            git apply --check "$patch"
+            git apply --include='test/*' "$patch"
+            mapfile -t tests < <(find test -type f -name '*.test.mjs' | sort)
+            if [ "${#tests[@]}" -eq 0 ]; then echo 'No tests'; exit 1; fi
+            set +e
+            node --test --test-timeout=10000 "${tests[@]}" > "$ROOT/audit-results/$id-before.tap" 2>&1
+            rc=$?
+            set -e
+            cat "$ROOT/audit-results/$id-before.tap"
+            if [ "$rc" -eq 0 ]; then echo 'Baseline unexpectedly passes all regressions'; exit 1; fi
+            git apply --exclude='test/*' "$patch"
+            node --test --test-timeout=10000 "${tests[@]}" | tee "$ROOT/audit-results/$id-after.tap"
+            for f in lib/*.js test/*.mjs; do node --check "$f"; done
+            git diff --check
+            npm pack --dry-run --json > "$ROOT/audit-results/$id-pack.json"
+            git add lib test
+            git diff --cached --check
+            git diff --cached --stat | tee "$ROOT/audit-results/$id-stat.txt"
+            git commit -m "$message"
+            if git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
+              git fetch origin "$branch"
+              git diff --exit-code HEAD FETCH_HEAD -- .
+              sha=$(git rev-parse FETCH_HEAD)
+            else
+              git push origin "HEAD:refs/heads/$branch"
+              sha=$(git rev-parse HEAD)
+            fi
+            printf '%s %s %s\n' "$id" "$branch" "$sha" | tee -a "$ROOT/audit-results/published.txt"
+            printf '### %s\n```\n' "$id" >> "$GITHUB_STEP_SUMMARY"
+            tail -10 "$ROOT/audit-results/$id-before.tap" >> "$GITHUB_STEP_SUMMARY"
+            tail -10 "$ROOT/audit-results/$id-after.tap" >> "$GITHUB_STEP_SUMMARY"
+            printf '```\nCommit: `%s`\n' "$sha" >> "$GITHUB_STEP_SUMMARY"
+            cd "$ROOT"
+          done
+          combined="$RUNNER_TEMP/combined"
+          git worktree add --detach "$combined" "$BASE"
+          cd "$combined"
+          ln -s "$ROOT/node_modules" node_modules
+          for patch in "$ROOT"/audit/patches/*.patch; do git apply "$patch"; done
+          node --test --test-timeout=10000 test/*.test.mjs | tee "$ROOT/audit-results/combined.tap"
+          git diff --check
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
-          name: upstream-audit-snapshot
-          path: /tmp/audit-export
-          retention-days: 3
+          name: circuit-audit-results
+          path: audit-results
+          retention-days: 14
