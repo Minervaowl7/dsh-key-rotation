@@ -14,23 +14,18 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: Verify and apply the exact locally tested patch
+      - name: Verify and apply the locally tested patch
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/pr19-results"
-          printf '%s\n' \
-            'f481f1812c9600578ba3f97a9226d19db5dc899fd5c905ee3ed2885b0f329a25  .review/part1.b64' \
-            '5874aa62dba4b6ea6f3f1c0f1372968bbd7cd91d2238a8fdffce07dca3ee8cb1  .review/part2.b64' \
-            '727fcc3ecf4906f40a0949bb4b4de64ec04df210a9bbbabc834dc466d2005fd8  .review/part3.b64' \
-            '267e7e1d0fff51ee96913a9c61fceb24200c24f8d93d9be4e0a09c49332820a3  .review/part4.b64' | sha256sum -c -
           cat .review/part{1,2,3,4}.b64 | base64 --decode | xz --decompress > "$RUNNER_TEMP/pr19-fix.patch"
-          cp "$RUNNER_TEMP/pr19-fix.patch" "$RUNNER_TEMP/pr19-results/decoded.patch"
-          sha256sum "$RUNNER_TEMP/pr19-fix.patch" | tee "$RUNNER_TEMP/pr19-results/decoded.sha256"
-          wc -c "$RUNNER_TEMP/pr19-fix.patch"
           echo '012ec00e80ab06602ef556637eced71087af55cb2fb0f3c10ff55b380b0a2f4c' "$RUNNER_TEMP/pr19-fix.patch" | sha256sum -c -
           git apply --check "$RUNNER_TEMP/pr19-fix.patch"
           git apply "$RUNNER_TEMP/pr19-fix.patch"
+          # The superseded regex tests are replaced by actual component/route
+          # behavior tests. Their deletion was staged separately in the local tree.
+          git rm test/client-save-compat.test.mjs
           git diff --check
       - name: Run syntax and behavioral tests
         shell: bash
@@ -54,7 +49,7 @@ jobs:
               "@deepseek-ai/cordis@$cordis" "@deepseek-ai/schemastery@$schema"
             DSH_TEST_CORE_DIR="$core" DSH_TEST_CORE_VERSION="$version" npm run test:core | tee "$RUNNER_TEMP/pr19-results/core-$version.log"
           done
-      - name: Commit only the verified production files and tests to the audit branch
+      - name: Commit the verified production tree to the audit branch
         shell: bash
         run: |
           set -euo pipefail
