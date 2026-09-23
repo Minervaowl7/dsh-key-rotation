@@ -25,6 +25,9 @@ jobs:
             '727fcc3ecf4906f40a0949bb4b4de64ec04df210a9bbbabc834dc466d2005fd8  .review/part3.b64' \
             '267e7e1d0fff51ee96913a9c61fceb24200c24f8d93d9be4e0a09c49332820a3  .review/part4.b64' | sha256sum -c -
           cat .review/part{1,2,3,4}.b64 | base64 --decode | xz --decompress > "$RUNNER_TEMP/pr19-fix.patch"
+          cp "$RUNNER_TEMP/pr19-fix.patch" "$RUNNER_TEMP/pr19-results/decoded.patch"
+          sha256sum "$RUNNER_TEMP/pr19-fix.patch" | tee "$RUNNER_TEMP/pr19-results/decoded.sha256"
+          wc -c "$RUNNER_TEMP/pr19-fix.patch"
           echo '012ec00e80ab06602ef556637eced71087af55cb2fb0f3c10ff55b380b0a2f4c' "$RUNNER_TEMP/pr19-fix.patch" | sha256sum -c -
           git apply --check "$RUNNER_TEMP/pr19-fix.patch"
           git apply "$RUNNER_TEMP/pr19-fix.patch"
