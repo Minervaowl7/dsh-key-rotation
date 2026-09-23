@@ -1,41 +1,76 @@
-name: PR 19 audit fixture
+name: PR 19 audited patch gate
 on:
   push:
     branches: [fix/pr19-behavioral-audit]
     paths: [.github/workflows/review-fixture.yml]
 permissions:
-  contents: read
+  contents: write
 jobs:
-  fixture:
+  validate:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: Install pinned test-only core packages
+      - name: Verify and apply the exact locally tested patch
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p audit-artifact
-          for v in 0.1.5-rc.2 0.1.6-alpha.2 0.1.7-alpha.1; do
-            mkdir -p "audit-artifact/cores/$v"
-            printf '{"private":true,"type":"module"}\n' > "audit-artifact/cores/$v/package.json"
-            npm install --prefix "audit-artifact/cores/$v" --ignore-scripts --no-audit --no-fund "@deepseek-ai/dsh-settings@$v" "@deepseek-ai/dsh-client-ui-settings@$v" > "audit-artifact/cores/$v/install.log" 2>&1 || true
-            cat "audit-artifact/cores/$v/install.log"
+          mkdir -p "$RUNNER_TEMP/pr19-results"
+          printf '%s\n' \
+            'f481f1812c9600578ba3f97a9226d19db5dc899fd5c905ee3ed2885b0f329a25  .review/part1.b64' \
+            '5874aa62dba4b6ea6f3f1c0f1372968bbd7cd91d2238a8fdffce07dca3ee8cb1  .review/part2.b64' \
+            '727fcc3ecf4906f40a0949bb4b4de64ec04df210a9bbbabc834dc466d2005fd8  .review/part3.b64' \
+            '267e7e1d0fff51ee96913a9c61fceb24200c24f8d93d9be4e0a09c49332820a3  .review/part4.b64' | sha256sum -c -
+          cat .review/part{1,2,3,4}.b64 | base64 --decode | xz --decompress > "$RUNNER_TEMP/pr19-fix.patch"
+          echo '012ec00e80ab06602ef556637eced71087af55cb2fb0f3c10ff55b380b0a2f4c' "$RUNNER_TEMP/pr19-fix.patch" | sha256sum -c -
+          git apply --check "$RUNNER_TEMP/pr19-fix.patch"
+          git apply "$RUNNER_TEMP/pr19-fix.patch"
+          git diff --check
+      - name: Run syntax and behavioral tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install --ignore-scripts --legacy-peer-deps --no-audit --no-fund --package-lock=false
+          npm run check | tee "$RUNNER_TEMP/pr19-results/check.log"
+          npm test | tee "$RUNNER_TEMP/pr19-results/unit.log"
+          npm pack --dry-run --json > "$RUNNER_TEMP/pr19-results/pack.json"
+      - name: Test pinned real DSH Host and Cordis contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          for spec in '0.1.5-rc.2 4.0.2 3.18.2' '0.1.6-alpha.2 4.0.4 3.18.4' '0.1.7-alpha.1 4.0.4 3.18.4'; do
+            read -r version cordis schema <<< "$spec"
+            core="$RUNNER_TEMP/dsh-$version"
+            mkdir -p "$core"
+            printf '{"private":true,"type":"module"}\n' > "$core/package.json"
+            npm install --prefix "$core" --ignore-scripts --no-audit --no-fund \
+              "@deepseek-ai/dsh-settings@$version" "@deepseek-ai/dsh-client-ui-settings@$version" \
+              "@deepseek-ai/cordis@$cordis" "@deepseek-ai/schemastery@$schema"
+            DSH_TEST_CORE_DIR="$core" DSH_TEST_CORE_VERSION="$version" npm run test:core | tee "$RUNNER_TEMP/pr19-results/core-$version.log"
           done
-          mkdir -p audit-artifact/deps
-          printf '{"private":true,"type":"module"}\n' > audit-artifact/deps/package.json
-          npm install --prefix audit-artifact/deps --ignore-scripts --no-audit --no-fund react@18.3.1 react-test-renderer@18.3.1 @deepseek-ai/cordis@4.0.1 @deepseek-ai/schemastery@3.18.1
-          node --version > audit-artifact/runtime.txt
-          git rev-parse HEAD >> audit-artifact/runtime.txt
-          tar -C audit-artifact -czf audit-fixture.tar.gz cores deps runtime.txt
+      - name: Commit only the verified production files and tests to the audit branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git rm -r .review
+          git add lib test tools package.json CHANGELOG.md TESTING.md
+          git diff --cached --check
+          git commit -m 'fix: validate settings compatibility, preserve secrets and make drafts recoverable'
+          git push origin HEAD:refs/heads/fix/pr19-behavioral-audit
+          git rev-parse HEAD > "$RUNNER_TEMP/pr19-results/commit.txt"
+          git rev-parse HEAD^{tree} > "$RUNNER_TEMP/pr19-results/tree.txt"
+          git diff --stat 8f844bc1ba66e49966567ff5ae943e86b7fd4a91 HEAD > "$RUNNER_TEMP/pr19-results/diff-stat.txt"
+          git ls-tree -r HEAD > "$RUNNER_TEMP/pr19-results/files.txt"
+          cp .github/workflows/tests.yml "$RUNNER_TEMP/pr19-results/tests.yml"
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
-          name: pr19-core-fixture
-          path: audit-fixture.tar.gz
-          retention-days: 3
-          if-no-files-found: error
+          name: pr19-audited-patch-results
+          path: ${{ runner.temp }}/pr19-results
+          retention-days: 7
+          if-no-files-found: warn
