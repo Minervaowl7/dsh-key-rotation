@@ -8,7 +8,7 @@ permissions:
 jobs:
   fixture:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
@@ -16,20 +16,26 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: Archive exact source and install test-only libraries
+      - name: Install pinned test-only core packages
         shell: bash
         run: |
           set -euo pipefail
+          mkdir -p audit-artifact
+          for v in 0.1.5-rc.2 0.1.6-alpha.2 0.1.7-alpha.1; do
+            mkdir -p "audit-artifact/cores/$v"
+            printf '{"private":true,"type":"module"}\n' > "audit-artifact/cores/$v/package.json"
+            npm install --prefix "audit-artifact/cores/$v" --ignore-scripts --no-audit --no-fund "@deepseek-ai/dsh-settings@$v" "@deepseek-ai/dsh-client-ui-settings@$v" > "audit-artifact/cores/$v/install.log" 2>&1 || true
+            cat "audit-artifact/cores/$v/install.log"
+          done
           mkdir -p audit-artifact/deps
-          git archive HEAD > audit-artifact/source.tar
           printf '{"private":true,"type":"module"}\n' > audit-artifact/deps/package.json
-          npm install --prefix audit-artifact/deps --ignore-scripts --no-audit --no-fund react@18.3.1 react-test-renderer@18.3.1
+          npm install --prefix audit-artifact/deps --ignore-scripts --no-audit --no-fund react@18.3.1 react-test-renderer@18.3.1 @deepseek-ai/cordis@4.0.1 @deepseek-ai/schemastery@3.18.1
           node --version > audit-artifact/runtime.txt
           git rev-parse HEAD >> audit-artifact/runtime.txt
-          tar -C audit-artifact -czf audit-fixture.tar.gz source.tar deps runtime.txt
+          tar -C audit-artifact -czf audit-fixture.tar.gz cores deps runtime.txt
       - uses: actions/upload-artifact@v4
         with:
-          name: pr19-audit-fixture
+          name: pr19-core-fixture
           path: audit-fixture.tar.gz
           retention-days: 3
           if-no-files-found: error
